@@ -46,6 +46,18 @@
 #include "cmsis_os.h"
 
 /* USER CODE BEGIN Includes */
+#include "can.h"
+#include "serial.h"
+#include "nodeMiscHelpers.h"
+#include "nodeConf.h"
+#include "../../CAN_ID.h"
+
+// RTOS Task functions + helpers
+#include "Can_Processor.h"
+#ifndef DISABLE_RT
+//#include "RT_Handler.h"
+#endif
+#include "Node_Manager.h"
 
 /* USER CODE END Includes */
 
@@ -71,7 +83,15 @@ osMutexId controlVarsMtxHandle;
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
+#ifndef NODE_CONFIGURED
+#error "NODE NOT CONFIGURED. GO CONFIGURE IT IN NODECONF.H!"
+#endif
 
+//osMutexId nodeEntryMtxHandle[16];		// Mutex for every node table entry
+QueueHandle_t * nodeEntryMtxHandle = (QueueHandle_t[MAX_NODE_NUM]){};
+osTimerId * nodeTmrHandle = (osTimerId[MAX_NODE_NUM]){};			// Timer for each node's timeout timer
+nodeEntry * nodeTable = (nodeEntry[MAX_NODE_NUM]){};
+controlVars userInput;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -93,7 +113,21 @@ void doNodeManager(void const * argument);
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
+// Handler for node HB timeout
+void TmrHBTimeout(void const * argument){
+	// TODO: Test if using point in the line below breaks this function
+ 	uint8_t timerID = (uint8_t)pvTimerGetTimerID((TimerHandle_t)argument);
+#ifdef DEBUG
+ 	Serial2_write(timerID); //Found your raw data, Frank. >:|
+ 	static uint8_t msg[] = "HB Timeout\n";
+	Serial2_writeBytes(msg,sizeof(msg)-1);
 
+#endif
+	nodeTable[timerID].nodeConnectionState = UNRELIABLE;
+	if((timerID) != mc_nodeID){
+		xQueueSend(BadNodesQHandle, &timerID, portMAX_DELAY);
+	}
+}
 /* USER CODE END 0 */
 
 int main(void)
@@ -119,6 +153,24 @@ int main(void)
   MX_WWDG_Init();
 
   /* USER CODE BEGIN 2 */
+#ifdef DEBUG
+	static uint8_t hbmsg[] = "Command Center booting... \n";
+	Serial2_writeBytes(hbmsg, sizeof(hbmsg)-1);
+#endif
+  setupNodeTable();
+  nodeTable[cc_nodeID].nodeStatusWord = ACTIVE;		// Set initial status to ACTIVE
+
+  ////*IF YOU GET HCAN1 NOT DEFINED ERROR, CHECK NODECONF.H FIRST!*////
+  bxCan_begin(&hcan1, &mainCanRxQHandle, &mainCanTxQHandle);
+  // Set up CAN filter banks
+  //XXX forgot the P2P commands?
+  bxCan_addMaskedFilterStd(swOffset,0xFF0,0); // Filter: Status word group (ignore nodeID)
+  bxCan_addMaskedFilterStd(fwOffset,0xFF0,0); // Filter: Firmware version group (ignore nodeID)
+  bxCan_addMaskedFilterStd(p2pOffset,0xFF0,0); // Filter: p2p command group (ignore nodeID)
+
+  bxCan_addMaskedFilterExt(mitsubaFr0,0xFFFFFF0F,0);	// Mitsuba Frame 0
+  bxCan_addMaskedFilterExt(mitsubaFr1,0xFFFFFF0F,0);	// Mitsuba Frame 1
+  bxCan_addMaskedFilterExt(mitsubaFr2,0xFFFFFF0F,0);	// Mitsuba Frame 2
 
   /* USER CODE END 2 */
 
@@ -129,6 +181,12 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
+  // Node table entry mutex
+  // Every entry has a mutex that is associated with the nodeID
+  for(uint8_t i =0; i < MAX_NODE_NUM; i++){
+	  osMutexDef(i);
+	  nodeEntryMtxHandle[i] = (QueueHandle_t)osMutexCreate(osMutex(i));
+  }
   /* USER CODE END RTOS_MUTEX */
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
@@ -137,6 +195,17 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_TIMERS */
   /* start timers, add new ones, ... */
+  // Node heartbeat timeout timers
+    for(uint8_t TmrID = 0; TmrID < MAX_NODE_NUM; TmrID++){
+  	  osTimerDef(TmrID, TmrHBTimeout);
+  	  // TODO: Consider passing the nodeTmrHandle+Offset or NULL
+  	  nodeTmrHandle[TmrID] = osTimerCreate(osTimer(TmrID), osTimerOnce, TmrID);	// TmrID here is stored directly as a variable
+  	  //DISCUSS changePeriod starts the damn timers...
+  	  xTimerChangePeriod(nodeTmrHandle[TmrID], Node_HB_Interval, portMAX_DELAY);
+  	  xTimerStop(nodeTmrHandle[TmrID], portMAX_DELAY);
+  	  //TODO investigate the timer crashes
+  	  // One-shot timer since it should be refreshed by the Can Processor upon node HB reception
+    }
   /* USER CODE END RTOS_TIMERS */
 
   /* Create the thread(s) */
@@ -385,26 +454,36 @@ static void MX_GPIO_Init(void)
 /* doKickDog function */
 void doKickDog(void const * argument)
 {
-
-  /* USER CODE BEGIN 5 */
+  /* USER CODE BEGIN doKickDog */
   /* Infinite loop */
+  uint32_t PreviousWakeTime = osKernelSysTick();
   for(;;)
   {
-    osDelay(1);
+	taskENTER_CRITICAL();
+	HAL_WWDG_Refresh(&hwwdg);
+	taskEXIT_CRITICAL();
+	osDelayUntil(&PreviousWakeTime, WD_Interval);
   }
-  /* USER CODE END 5 */ 
+  /* USER CODE END doKickDog */
 }
 
 /* doRealTime function */
 void doRealTime(void const * argument)
 {
-  /* USER CODE BEGIN doRealTime */
+
+  /* USER CODE BEGIN 5 */
+#ifndef DISABLE_RT
   /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
+  uint32_t PreviousWakeTime = osKernelSysTick();
+  uint8_t motorCanErrCount = 0;
+  // Wrapper for RT_Handler task
+//  RT_Handler(&PreviousWakeTime, &motorCanErrCount);
+#else
+  for(;;){
+	  osDelay(10000);
   }
-  /* USER CODE END doRealTime */
+#endif
+  /* USER CODE END 5 */
 }
 
 /* doProcessCan function */
@@ -412,10 +491,9 @@ void doProcessCan(void const * argument)
 {
   /* USER CODE BEGIN doProcessCan */
   /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
+	// Wrapper function for the CAN Processing Logic
+	// Handles all CAN Protocol Suite based responses and tasks
+	Can_Processor();
   /* USER CODE END doProcessCan */
 }
 
@@ -426,7 +504,8 @@ void doNodeManager(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+	// Wrapper for the Node_Manager task
+    Node_Manager();
   }
   /* USER CODE END doNodeManager */
 }
