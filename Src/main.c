@@ -134,7 +134,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+	setState(ACTIVE);
   /* USER CODE END 1 */
 
   /* MCU Configuration----------------------------------------------------------*/
@@ -348,11 +348,11 @@ static void MX_CAN1_Init(void)
   hcan1.Init.Prescaler = 10;
   hcan1.Init.Mode = CAN_MODE_NORMAL;
   hcan1.Init.SJW = CAN_SJW_1TQ;
-  hcan1.Init.BS1 = CAN_BS1_13TQ;
-  hcan1.Init.BS2 = CAN_BS2_2TQ;
+  hcan1.Init.BS1 = CAN_BS1_11TQ;
+  hcan1.Init.BS2 = CAN_BS2_4TQ;
   hcan1.Init.TTCM = DISABLE;
-  hcan1.Init.ABOM = ENABLE;
-  hcan1.Init.AWUM = ENABLE;
+  hcan1.Init.ABOM = DISABLE;
+  hcan1.Init.AWUM = DISABLE;
   hcan1.Init.NART = DISABLE;
   hcan1.Init.RFLM = DISABLE;
   hcan1.Init.TXFP = DISABLE;
@@ -454,22 +454,6 @@ static void MX_GPIO_Init(void)
 /* doKickDog function */
 void doKickDog(void const * argument)
 {
-  /* USER CODE BEGIN doKickDog */
-  /* Infinite loop */
-  uint32_t PreviousWakeTime = osKernelSysTick();
-  for(;;)
-  {
-	taskENTER_CRITICAL();
-	HAL_WWDG_Refresh(&hwwdg);
-	taskEXIT_CRITICAL();
-	osDelayUntil(&PreviousWakeTime, WD_Interval);
-  }
-  /* USER CODE END doKickDog */
-}
-
-/* doRealTime function */
-void doRealTime(void const * argument)
-{
 
   /* USER CODE BEGIN 5 */
 #ifndef DISABLE_RT
@@ -483,7 +467,19 @@ void doRealTime(void const * argument)
 	  osDelay(10000);
   }
 #endif
-  /* USER CODE END 5 */
+  /* USER CODE END 5 */ 
+}
+
+/* doRealTime function */
+void doRealTime(void const * argument)
+{
+  /* USER CODE BEGIN doRealTime */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END doRealTime */
 }
 
 /* doProcessCan function */

@@ -49,8 +49,6 @@ void executeCommand(uint8_t cmd){
 			setState(INIT);
 			// Flush the Rx queue for fresh state on start-up
 			xQueueReset(mainCanRxQHandle);
-			xQueueReset(mainCanTxQHandle);
-			xQueueReset(motCanRxQHandle);
 			xQueueReset(motCanTxQHandle);
 			// XXX 2: Flush the application queues!
 			// xQueueReset();
